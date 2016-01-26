@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rackspace/rack/internal/github.com/gosuri/uiprogress"
 	"github.com/rackspace/rack/commandoptions"
 	"github.com/rackspace/rack/commands/filescommands/objectcommands"
 	"github.com/rackspace/rack/handler"
@@ -70,6 +71,10 @@ func flagsUpload() []cli.Flag {
 			Name:  "concurrency",
 			Usage: "[optional] The number of workers that will be uploading pieces at the same time.",
 		},
+		cli.BoolFlag{
+			Name:  "quiet",
+			Usage: "[optional] By default, progress bars will be outputted. If --quiet is provided, only a final summary will be outputted.",
+		},
 	}
 }
 
@@ -80,6 +85,7 @@ type paramsUpload struct {
 	object    string
 	stream    io.Reader
 	opts      osObjects.CreateLargeOpts
+	quiet     bool
 }
 
 type commandUpload handler.Command
@@ -141,6 +147,7 @@ func (command *commandUpload) HandleFlags(resource *handler.Resource) error {
 		container: containerName,
 		object:    c.String("name"),
 		opts:      opts,
+		quiet:     c.Bool("quiet"),
 	}
 
 	return nil
@@ -194,14 +201,61 @@ func (command *commandUpload) Execute(resource *handler.Resource) {
 	stream := params.stream
 	opts := params.opts
 
+	statusChannel := make(chan *osObjects.TransferStatus)
+	opts.StatusChannel = statusChannel
+
 	start := time.Now()
 
-	runtime.GOMAXPROCS(runtime.NumCPU())
-	rawResponse := osObjects.CreateLarge(command.Ctx.ServiceClient, containerName, objectName, stream, opts)
-	if rawResponse.Err != nil {
-		resource.Err = rawResponse.Err
-		return
+	if os.Getenv("GOMAXPROCS") == "" {
+		runtime.GOMAXPROCS(runtime.NumCPU())
 	}
+
+	go osObjects.CreateLarge(command.Ctx.ServiceClient, containerName, objectName, stream, opts)
+
+	statusBarsByName := map[string]*ProgressBarInfo{}
+	fileNamesByBar := map[*uiprogress.Bar]string{}
+
+	progress := uiprogress.New()
+	progress.RefreshInterval = time.Second * 2
+
+	if !params.quiet {
+		progress.Start()
+	}
+
+	for status := range statusChannel {
+		switch status.MsgType {
+		case osObjects.StatusStarted:
+			statusBar := progress.AddBar(status.TotalSize).AppendCompleted().PrependElapsed().PrependFunc(func(b *uiprogress.Bar) string {
+				return fileNamesByBar[b]
+			})
+			index := len(progress.Bars) - 1
+			statusBarsByName[status.Name] = &ProgressBarInfo{index, statusBar}
+			fileNamesByBar[statusBar] = status.Name
+		case osObjects.StatusUpdate:
+			if statusBarInfo := statusBarsByName[status.Name]; statusBarInfo != nil {
+				statusBarInfo.bar.Incr()
+				statusBarInfo.bar.Set(statusBarInfo.bar.Current() - 1 + status.IncrementUploaded)
+			}
+		case osObjects.StatusSuccess:
+			if statusBarInfo := statusBarsByName[status.Name]; statusBarInfo != nil {
+				statusBarInfo.bar.Set(status.TotalSize)
+			}
+		case osObjects.StatusError:
+			command.Ctx.DebugChannel <- status.Err
+			if statusBarInfo := statusBarsByName[status.Name]; statusBarInfo != nil {
+				replacementBar := uiprogress.NewBar(statusBarInfo.bar.Total).AppendCompleted().PrependElapsed().PrependFunc(func(b *uiprogress.Bar) string {
+					return fmt.Sprintf("ERROR %s", fileNamesByBar[b])
+				})
+				replacementBar.Set(statusBarInfo.bar.Current())
+				progress.Bars[statusBarInfo.index] = replacementBar
+			}
+		default:
+			command.Ctx.DebugChannel <- status.Err
+		}
+	}
+
+	close(command.Ctx.DebugChannel)
+
 	resource.Result = fmt.Sprintf("Finished! Uploaded object [%s] to container [%s] in %s", objectName, containerName, humanize.RelTime(start, time.Now(), "", ""))
 }
 
@@ -221,4 +275,9 @@ func (command *commandUpload) HandleStreamPipe(resource *handler.Resource) error
 	resource.Params.(*paramsUpload).object = command.Ctx.CLIContext.String("name")
 	resource.Params.(*paramsUpload).stream = os.Stdin
 	return nil
+}
+
+type ProgressBarInfo struct {
+	index int
+	bar   *uiprogress.Bar
 }

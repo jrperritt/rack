@@ -510,6 +510,7 @@ type CreateLargeOptsBuilder interface {
 	SizeOfPieces() (int64, error)
 	LengthOfContent() (int64, error)
 	NumConcurrent() (int, error)
+	ChannelOfStatuses() (chan *TransferStatus, error)
 }
 
 // CreateLargeOpts is a structure that holds parameters for creating a large object.
@@ -519,6 +520,8 @@ type CreateLargeOpts struct {
 	SizePieces int64
 	// [OPTIONAL] The number of concurrent goroutines. Default is runtime.NumCPU()
 	Concurrency int
+	// [OPTIONAL] The channel on which to send status updates
+	StatusChannel chan *TransferStatus
 }
 
 // ToObjectCreateLargeParams formats a CreateLargeOpts into a query string and map of
@@ -562,6 +565,60 @@ func (opts CreateLargeOpts) NumConcurrent() (int, error) {
 	return opts.Concurrency, nil
 }
 
+// ChannelOfStatuses returns the channel on which to send status updates on the
+// progress of the upload.
+func (opts CreateLargeOpts) ChannelOfStatuses() (chan *TransferStatus, error) {
+	if opts.StatusChannel == nil {
+		return nil, errors.New("StatusChannel must be provided.")
+	}
+	return opts.StatusChannel, nil
+}
+
+// StatusMsg is the type of status message being sent on the channel returned by
+// ChannelOfStatuses.
+type StatusMsg string
+
+var (
+	StatusStarted StatusMsg = "started"
+	StatusUpdate  StatusMsg = "update"
+	StatusSuccess StatusMsg = "success"
+	StatusError   StatusMsg = "error"
+)
+
+// TransferStatus is the status of an HTTP transfer.
+type TransferStatus struct {
+	Name              string
+	TotalSize         int
+	IncrementUploaded int
+	StartTime         time.Time
+	MsgType           StatusMsg
+	Err               error
+}
+
+// contentWrapperTransferProgress is a wrapper to track the progress of an
+// HTTP transfer such as a file upload or download.
+type contentWrapperTransferProgress struct {
+	userContent       io.Reader
+	name              string
+	totalSize         int
+	incrementUploaded int
+	startTime         time.Time
+	responseChannel   chan *TransferStatus
+}
+
+func (cwtp contentWrapperTransferProgress) Read(p []byte) (int, error) {
+	n, err := cwtp.userContent.Read(p)
+	cwtp.responseChannel <- &TransferStatus{
+		Name:              cwtp.name,
+		TotalSize:         cwtp.totalSize,
+		IncrementUploaded: n,
+		MsgType:           StatusUpdate,
+		StartTime:         cwtp.startTime,
+		Err:               fmt.Errorf("cwtp: %+v", cwtp),
+	}
+	return n, err
+}
+
 // CreateLarge is a function that creates a new large object or replaces an existing object. If the returned response's ETag
 // header fails to match the local checksum, the request will fail.
 func CreateLarge(c *gophercloud.ServiceClient, containerName, objectName string, content io.Reader, opts CreateLargeOptsBuilder) CreateResult {
@@ -581,14 +638,6 @@ func CreateLarge(c *gophercloud.ServiceClient, containerName, objectName string,
 		return res
 	}
 
-	h := make(map[string]string)
-	for k, v := range headers {
-		h[k] = v
-	}
-
-	resChan := make(chan job)
-	multiErr := ErrCreateLarge{}
-
 	// Get the length of the content
 	contentLength, err := opts.LengthOfContent()
 	if err != nil {
@@ -598,6 +647,12 @@ func CreateLarge(c *gophercloud.ServiceClient, containerName, objectName string,
 
 	// Get the number of concurrent goroutines to launch
 	numConcurrent, err := opts.NumConcurrent()
+	if err != nil {
+		res.Err = err
+		return res
+	}
+
+	statusChannel, err := opts.ChannelOfStatuses()
 	if err != nil {
 		res.Err = err
 		return res
@@ -613,209 +668,187 @@ func CreateLarge(c *gophercloud.ServiceClient, containerName, objectName string,
 			numPieces++
 		}
 
-		availableGoroutines := numConcurrent
-		// i is the job number
-		i := 0
-		// j is the number of successful pieces uploaded so far
-		j := 0
-		jobChan := make(chan job, numPieces)
-		var once sync.Once
+		jobs := make(chan int, numPieces)
+		var wg sync.WaitGroup
+		for i := 0; i < numConcurrent; i++ {
+			wg.Add(1)
+			go func() {
+				for job := range jobs {
+					sectionReader := io.NewSectionReader(readerAt, int64(job)*sizePieces, sizePieces)
 
-		// Fill the jobs queue with all the number of jobs equal to the
-		// number of pieces to upload.
-		loadJobs := func() {
-			//fmt.Printf("adding %d jobs to jobChan\n", numPieces)
-			for j := 0; j < numPieces; j++ {
-				jobChan <- job{i: j}
-			}
-		}
+					thisObject := fmt.Sprintf("%s.%03d", objectName, job)
+					url := createURL(c, containerName, thisObject)
+					url += query
 
-		// spawnJob is a label we return to when there are available goroutines.
-	spawnJob:
-		for availableGoroutines != 0 {
+					hash := md5.New()
 
-			po := &pieceOpts{
-				resChan:       resChan,
-				jobChan:       jobChan,
-				c:             c,
-				objectName:    objectName,
-				containerName: containerName,
-				readerAt:      readerAt,
-				sizePieces:    sizePieces,
-				query:         query,
-				headers:       h,
-			}
+					cwtp := contentWrapperTransferProgress{
+						name:            thisObject,
+						totalSize:       int(sizePieces),
+						startTime:       time.Now(),
+						responseChannel: statusChannel,
+					}
+					cwtp.userContent = io.TeeReader(sectionReader, hash)
 
-			// Spawn a goroutine to process a job from the jobs queue.
-			go uploadPiece(po)
+					if job == numPieces-1 {
+						cwtp.totalSize = int(contentLength % sizePieces)
+					}
 
-			// increase the job number by 1
-			i++
-			// decrease the number of available goroutines by 1
-			availableGoroutines--
-		}
+					ropts := gophercloud.RequestOpts{
+						RawBody:     cwtp,
+						MoreHeaders: headers,
+					}
 
-		// Only load the jobs queue fully once.
-		once.Do(loadJobs)
+					transferStatus := &TransferStatus{
+						Name:              thisObject,
+						TotalSize:         cwtp.totalSize,
+						IncrementUploaded: cwtp.incrementUploaded,
+						StartTime:         time.Now(),
+					}
 
-		// Run this loop while the number of successfully uploaded pieces is less
-		// than the total number of pieces we need to upload.
-		for j < numPieces {
-			// read a result from the result channel
-			res := <-resChan
-			// a result on the result channel means we have an available goroutine
-			availableGoroutines++
+					transferStatus.MsgType = StatusStarted
+					statusChannel <- transferStatus
 
-			// run this block if there was an error while processing the job
-			if res.err != nil {
-				//fmt.Printf("Error for job (%d): %+v\n", res.i, res.err)
-				// if we haven't exceded our allowed number of retries for
-				// the job, requeue it in the jobs channel.
-				if res.numRetries < 10 {
-					res.numRetries++
-					jobChan <- res
-					// otherwise, add it to the list of errors to return.
-				} else {
-					multiErr = append(multiErr, res.err)
-					j++
+					resp, err := c.Request("PUT", url, ropts)
+
+					if closeable, ok := cwtp.userContent.(io.ReadCloser); ok {
+						closeable.Close()
+					}
+
+					if err != nil {
+						transferStatus.MsgType = StatusError
+						transferStatus.Err = err
+						statusChannel <- transferStatus
+						jobs <- job
+						continue
+					}
+
+					if resp != nil {
+						if resp.Header.Get("ETag") == fmt.Sprintf("%x", hash.Sum(nil)) {
+							transferStatus.MsgType = StatusSuccess
+							statusChannel <- transferStatus
+							if len(jobs) != 0 {
+								continue
+							}
+							time.Sleep(time.Second * 2)
+							break
+						}
+						transferStatus.MsgType = StatusError
+						transferStatus.Err = fmt.Errorf(fmt.Sprintf("Local checksum does not match API ETag header for file: %s", thisObject))
+						statusChannel <- transferStatus
+						jobs <- job
+					}
 				}
-			} else {
-				//fmt.Printf("No error for job (%d)\n", res.i)
-				j++
-			}
-
-			// if there are jobs to process, spawn another goroutine to
-			// process a job.
-			if len(jobChan) > 0 {
-				goto spawnJob
-			}
+				wg.Done()
+			}()
 		}
 
-		if len(multiErr) > 0 {
-			res.Err = multiErr
-			return res
+		for i := 0; i < numPieces; i++ {
+			jobs <- i
 		}
+
+		wg.Wait()
+
 	} else {
 		for i := 0; ; i++ {
-
-			thisJob := job{i: i}
-
-			url := createURL(c, containerName, fmt.Sprintf("%s.%03d", objectName, i))
+			thisObject := fmt.Sprintf("%s.%03d", objectName, i)
+			url := createURL(c, containerName, fmt.Sprintf("%s", thisObject))
 			url += query
 
+			hash := md5.New()
 			limitReader := io.LimitReader(content, sizePieces)
 
-			hash := md5.New()
+			cwtp := contentWrapperTransferProgress{
+				name:            thisObject,
+				totalSize:       int(sizePieces),
+				startTime:       time.Now(),
+				responseChannel: statusChannel,
+			}
+
+			transferStatus := &TransferStatus{
+				Name:              thisObject,
+				IncrementUploaded: cwtp.incrementUploaded,
+				StartTime:         time.Now(),
+			}
 
 			buf := bytes.NewBuffer([]byte{})
 			_, err := io.Copy(io.MultiWriter(hash, buf), limitReader)
-			if err != nil {
-				thisJob.err = err
-				resChan <- thisJob
+
+			if buf.Len() == 0 {
 				break
 			}
+
+			transferStatus.TotalSize = buf.Len()
+
+			if err != nil {
+				transferStatus.MsgType = StatusError
+				transferStatus.Err = err
+				statusChannel <- transferStatus
+				break
+			}
+			cwtp.userContent = buf
 
 			localChecksum := fmt.Sprintf("%x", hash.Sum(nil))
-			if localChecksum == "d41d8cd98f00b204e9800998ecf8427e" {
-				// hash of empty string ^
-				break
-			}
-
-			h["ETag"] = localChecksum
+			headers["ETag"] = localChecksum
 
 			ropts := gophercloud.RequestOpts{
-				RawBody:     buf,
-				MoreHeaders: h,
+				RawBody:     cwtp,
+				MoreHeaders: headers,
 			}
 
-			_, err = c.Request("PUT", url, ropts)
+			transferStatus.MsgType = StatusStarted
+			statusChannel <- transferStatus
+
+			resp, err := c.Request("PUT", url, ropts)
 			if err != nil {
-				thisJob.err = err
-				resChan <- thisJob
+				transferStatus.MsgType = StatusError
+				transferStatus.Err = err
+				statusChannel <- transferStatus
 				break
 			}
-			i++
+
+			if closeable, ok := cwtp.userContent.(io.ReadCloser); ok {
+				closeable.Close()
+			}
+
+			if err != nil {
+				transferStatus.MsgType = StatusError
+				transferStatus.Err = err
+				statusChannel <- transferStatus
+				continue
+			}
+
+			if resp != nil {
+				if resp.Header.Get("ETag") == localChecksum {
+					transferStatus.MsgType = StatusSuccess
+					statusChannel <- transferStatus
+				} else {
+					transferStatus.MsgType = StatusError
+					transferStatus.Err = fmt.Errorf(fmt.Sprintf("Local checksum does not match API ETag header for file: %s", thisObject))
+					statusChannel <- transferStatus
+				}
+			}
+
+		}
+
+		ropts := gophercloud.RequestOpts{
+			MoreHeaders: map[string]string{
+				"X-Object-Manifest": fmt.Sprintf("%s/%s", containerName, objectName),
+			},
+		}
+
+		resp, err := c.Request("PUT", createURL(c, containerName, objectName), ropts)
+
+		if err != nil {
+			statusChannel <- &TransferStatus{Err: err}
+		}
+		if resp != nil {
+			res.Header = resp.Header
 		}
 	}
 
-	ropts := gophercloud.RequestOpts{
-		MoreHeaders: map[string]string{
-			"X-Object-Manifest": fmt.Sprintf("%s/%s", containerName, objectName),
-		},
-	}
-
-	resp, err := c.Request("PUT", createURL(c, containerName, objectName), ropts)
-	if err != nil {
-		res.Err = err
-		return res
-	}
-	if resp != nil {
-		res.Header = resp.Header
-	}
+	close(statusChannel)
 	return res
-}
-
-func uploadPiece(po *pieceOpts) {
-
-	thisJob := <-po.jobChan
-
-	//fmt.Printf("starting job %d\n", thisJob.i)
-
-	sectionReader := io.NewSectionReader(po.readerAt, int64(thisJob.i)*po.sizePieces, po.sizePieces)
-
-	thisObject := fmt.Sprintf("%s.%03d", po.objectName, thisJob.i)
-	url := createURL(po.c, po.containerName, thisObject)
-	url += po.query
-
-	hash := md5.New()
-
-	teeReader := io.TeeReader(sectionReader, hash)
-
-	ropts := gophercloud.RequestOpts{
-		RawBody:     teeReader,
-		MoreHeaders: po.headers,
-	}
-
-	resp, err := po.c.Request("PUT", url, ropts)
-
-	if closeable, ok := teeReader.(io.ReadCloser); ok {
-		closeable.Close()
-	}
-
-	if err != nil {
-		thisJob.err = err
-		po.resChan <- thisJob
-		return
-	}
-
-	if resp != nil {
-		if resp.Header.Get("ETag") == fmt.Sprintf("%x", hash.Sum(nil)) {
-			thisJob.err = err
-			po.resChan <- thisJob
-			return
-		}
-		thisJob.err = fmt.Errorf(fmt.Sprintf("Local checksum does not match API ETag header for file: %s", thisObject))
-		po.resChan <- thisJob
-		return
-	}
-}
-
-type pieceOpts struct {
-	resChan       chan job
-	jobChan       chan job
-	c             *gophercloud.ServiceClient
-	objectName    string
-	containerName string
-	readerAt      io.ReaderAt
-	sizePieces    int64
-	query         string
-	headers       map[string]string
-}
-
-type job struct {
-	i          int
-	numRetries int
-	err        error
 }
 
 // ErrCreateLarge represents the errors returned from a CreateLarge operation.
