@@ -230,6 +230,8 @@ func (command *commandUpload) Execute(resource *handler.Resource) {
 		case osObjects.StatusStarted:
 			statusBar := progress.AddBar(status.TotalSize).AppendCompleted().PrependElapsed().PrependFunc(func(b *uiprogress.Bar) string {
 				return fileNamesByBar[b]
+			}).AppendFunc(func(b *uiprogress.Bar) string {
+				return fmt.Sprintf("%s/%s", humanize.Bytes(uint64(b.Current())), humanize.Bytes(uint64(b.Total)))
 			})
 			index := len(progress.Bars) - 1
 			statusBarsByName[status.Name] = &ProgressBarInfo{index, statusBar}
