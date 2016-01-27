@@ -25,9 +25,9 @@ type StreamPipeHandler interface {
 	HandleStreamPipe(*Resource) error
 }
 
-type ProgressUpdater interface {
+type StatusUpdater interface {
 	Commander
-	UpdateProgress(*Resource) chan interface{}
+	StatusChannel(*Resource) chan interface{}
 }
 
 // PipeHandler is an interface that commands implement if they can accept input
@@ -114,8 +114,8 @@ func Handle(command Commander) {
 
 	handleExecute(command, resource)
 
-	if progressUpdater, ok := command.(ProgressUpdater); ok {
-		statusChannel := progressUpdater.UpdateProgress(resource)
+	if statusUpdater, ok := command.(StatusUpdater); ok {
+		statusChannel := statusUpdater.StatusChannel(resource)
 		for msg := range statusChannel {
 			fmt.Println(msg)
 		}

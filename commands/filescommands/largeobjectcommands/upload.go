@@ -285,6 +285,6 @@ type ProgressBarInfo struct {
 	bar   *uiprogress.Bar
 }
 
-func (command *commandUpload) UpdateProgress(resource *handler.Resource) chan interface{} {
+func (command *commandUpload) StatusChannel(resource *handler.Resource) chan interface{} {
 	return resource.Params.(*paramsUpload).statusChannel
 }
