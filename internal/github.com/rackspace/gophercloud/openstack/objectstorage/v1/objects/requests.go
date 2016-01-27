@@ -668,6 +668,10 @@ func CreateLarge(c *gophercloud.ServiceClient, containerName, objectName string,
 			numPieces++
 		}
 
+		if numConcurrent > numPieces {
+			numConcurrent = numPieces
+		}
+
 		jobs := make(chan int, numPieces)
 		var wg sync.WaitGroup
 		for i := 0; i < numConcurrent; i++ {
@@ -730,7 +734,7 @@ func CreateLarge(c *gophercloud.ServiceClient, containerName, objectName string,
 							if len(jobs) != 0 {
 								continue
 							}
-							time.Sleep(time.Second * 2)
+							time.Sleep(time.Second * 1)
 							break
 						}
 						transferStatus.MsgType = StatusError
