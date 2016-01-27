@@ -215,7 +215,7 @@ func (command *commandUpload) Execute(resource *handler.Resource) {
 
 	go osObjects.CreateLarge(command.Ctx.ServiceClient, containerName, objectName, stream, opts)
 
-	statusBarsByName := map[string]*ProgressBarInfo{}
+	statusBarsByName := map[string]*uiprogress.Bar{}
 	fileNamesByBar := map[*uiprogress.Bar]string{}
 
 	progress := uiprogress.New()
@@ -235,25 +235,24 @@ func (command *commandUpload) Execute(resource *handler.Resource) {
 				}).AppendFunc(func(b *uiprogress.Bar) string {
 					return fmt.Sprintf("%s/%s", humanize.Bytes(uint64(b.Current())), humanize.Bytes(uint64(b.Total)))
 				})
-				index := len(progress.Bars) - 1
-				statusBarsByName[status.Name] = &ProgressBarInfo{index, statusBar}
+				statusBarsByName[status.Name] = statusBar
 				fileNamesByBar[statusBar] = status.Name
 			} else {
-				fileNamesByBar[statusBarInfo.bar] = status.Name
+				//fileNamesByBar[statusBarInfo.bar] = status.Name
 			}
 
 		case osObjects.StatusUpdate:
-			if statusBarInfo := statusBarsByName[status.Name]; statusBarInfo != nil {
-				statusBarInfo.bar.Incr()
-				statusBarInfo.bar.Set(statusBarInfo.bar.Current() - 1 + status.IncrementUploaded)
+			if statusBar := statusBarsByName[status.Name]; statusBar != nil {
+				statusBar.Incr()
+				statusBar.Set(statusBar.Current() - 1 + status.IncrementUploaded)
 			}
 		case osObjects.StatusSuccess:
-			if statusBarInfo := statusBarsByName[status.Name]; statusBarInfo != nil {
-				statusBarInfo.bar.Set(status.TotalSize)
+			if statusBar := statusBarsByName[status.Name]; statusBar != nil {
+				statusBar.Set(status.TotalSize)
 			}
 		case osObjects.StatusError:
-			if statusBarInfo := statusBarsByName[status.Name]; statusBarInfo != nil {
-				fileNamesByBar[statusBarInfo.bar] = fmt.Sprintf("[ERROR: %s, WILL RETRY] %s", status.Err, status.Name)
+			if statusBar := statusBarsByName[status.Name]; statusBar != nil {
+				fileNamesByBar[statusBar] = fmt.Sprintf("[ERROR: %s, WILL RETRY] %s", status.Err, status.Name)
 			}
 		default:
 			statusChannel <- status.Err
@@ -281,11 +280,6 @@ func (command *commandUpload) HandleStreamPipe(resource *handler.Resource) error
 	resource.Params.(*paramsUpload).object = command.Ctx.CLIContext.String("name")
 	resource.Params.(*paramsUpload).stream = os.Stdin
 	return nil
-}
-
-type ProgressBarInfo struct {
-	index int
-	bar   *uiprogress.Bar
 }
 
 func (command *commandUpload) StatusChannel(resource *handler.Resource) chan interface{} {
