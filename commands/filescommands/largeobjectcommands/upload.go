@@ -228,14 +228,20 @@ func (command *commandUpload) Execute(resource *handler.Resource) {
 	for status := range gophercloudChannel {
 		switch status.MsgType {
 		case osObjects.StatusStarted:
-			statusBar := progress.AddBar(status.TotalSize).AppendCompleted().PrependElapsed().PrependFunc(func(b *uiprogress.Bar) string {
-				return fileNamesByBar[b]
-			}).AppendFunc(func(b *uiprogress.Bar) string {
-				return fmt.Sprintf("%s/%s", humanize.Bytes(uint64(b.Current())), humanize.Bytes(uint64(b.Total)))
-			})
-			index := len(progress.Bars) - 1
-			statusBarsByName[status.Name] = &ProgressBarInfo{index, statusBar}
-			fileNamesByBar[statusBar] = status.Name
+			statusBarInfo := statusBarsByName[status.Name]
+			if statusBarInfo == nil {
+				statusBar := progress.AddBar(status.TotalSize).AppendCompleted().PrependElapsed().PrependFunc(func(b *uiprogress.Bar) string {
+					return fileNamesByBar[b]
+				}).AppendFunc(func(b *uiprogress.Bar) string {
+					return fmt.Sprintf("%s/%s", humanize.Bytes(uint64(b.Current())), humanize.Bytes(uint64(b.Total)))
+				})
+				index := len(progress.Bars) - 1
+				statusBarsByName[status.Name] = &ProgressBarInfo{index, statusBar}
+				fileNamesByBar[statusBar] = status.Name
+			} else {
+				fileNamesByBar[statusBarInfo.bar] = status.Name
+			}
+
 		case osObjects.StatusUpdate:
 			if statusBarInfo := statusBarsByName[status.Name]; statusBarInfo != nil {
 				statusBarInfo.bar.Incr()
@@ -246,13 +252,8 @@ func (command *commandUpload) Execute(resource *handler.Resource) {
 				statusBarInfo.bar.Set(status.TotalSize)
 			}
 		case osObjects.StatusError:
-			statusChannel <- status.Err
 			if statusBarInfo := statusBarsByName[status.Name]; statusBarInfo != nil {
-				replacementBar := uiprogress.NewBar(statusBarInfo.bar.Total).AppendCompleted().PrependElapsed().PrependFunc(func(b *uiprogress.Bar) string {
-					return fmt.Sprintf("ERROR %s", fileNamesByBar[b])
-				})
-				replacementBar.Set(statusBarInfo.bar.Current())
-				progress.Bars[statusBarInfo.index] = replacementBar
+				fileNamesByBar[statusBarInfo.bar] = fmt.Sprintf("[ERROR: %s, WILL RETRY] %s", status.Err, status.Name)
 			}
 		default:
 			statusChannel <- status.Err

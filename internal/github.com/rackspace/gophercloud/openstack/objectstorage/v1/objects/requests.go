@@ -585,6 +585,13 @@ var (
 	StatusError   StatusMsg = "error"
 )
 
+const defaultMaxRetries = 5
+
+type uploadJob struct {
+	id          int
+	retriesLeft int
+}
+
 // TransferStatus is the status of an HTTP transfer.
 type TransferStatus struct {
 	Name              string
@@ -672,15 +679,15 @@ func CreateLarge(c *gophercloud.ServiceClient, containerName, objectName string,
 			numConcurrent = numPieces
 		}
 
-		jobs := make(chan int, numPieces)
+		uploadJobs := make(chan uploadJob, numPieces)
 		var wg sync.WaitGroup
 		for i := 0; i < numConcurrent; i++ {
 			wg.Add(1)
 			go func() {
-				for job := range jobs {
-					sectionReader := io.NewSectionReader(readerAt, int64(job)*sizePieces, sizePieces)
+				for job := range uploadJobs {
+					sectionReader := io.NewSectionReader(readerAt, int64(job.id)*sizePieces, sizePieces)
 
-					thisObject := fmt.Sprintf("%s.%03d", objectName, job)
+					thisObject := fmt.Sprintf("%s.%03d", objectName, job.id)
 					url := createURL(c, containerName, thisObject)
 					url += query
 
@@ -694,7 +701,7 @@ func CreateLarge(c *gophercloud.ServiceClient, containerName, objectName string,
 					}
 					cwtp.userContent = io.TeeReader(sectionReader, hash)
 
-					if job == numPieces-1 {
+					if job.id == numPieces-1 {
 						cwtp.totalSize = int(contentLength % sizePieces)
 					}
 
@@ -723,7 +730,7 @@ func CreateLarge(c *gophercloud.ServiceClient, containerName, objectName string,
 						transferStatus.MsgType = StatusError
 						transferStatus.Err = err
 						statusChannel <- transferStatus
-						jobs <- job
+						uploadJobs <- uploadJob{job.id, job.retriesLeft - 1}
 						continue
 					}
 
@@ -731,7 +738,7 @@ func CreateLarge(c *gophercloud.ServiceClient, containerName, objectName string,
 						if resp.Header.Get("ETag") == fmt.Sprintf("%x", hash.Sum(nil)) {
 							transferStatus.MsgType = StatusSuccess
 							statusChannel <- transferStatus
-							if len(jobs) != 0 {
+							if len(uploadJobs) != 0 {
 								continue
 							}
 							time.Sleep(time.Second * 1)
@@ -740,7 +747,7 @@ func CreateLarge(c *gophercloud.ServiceClient, containerName, objectName string,
 						transferStatus.MsgType = StatusError
 						transferStatus.Err = fmt.Errorf(fmt.Sprintf("Local checksum does not match API ETag header for file: %s", thisObject))
 						statusChannel <- transferStatus
-						jobs <- job
+						uploadJobs <- uploadJob{job.id, job.retriesLeft - 1}
 					}
 				}
 				wg.Done()
@@ -748,7 +755,7 @@ func CreateLarge(c *gophercloud.ServiceClient, containerName, objectName string,
 		}
 
 		for i := 0; i < numPieces; i++ {
-			jobs <- i
+			uploadJobs <- uploadJob{i, defaultMaxRetries}
 		}
 
 		wg.Wait()
