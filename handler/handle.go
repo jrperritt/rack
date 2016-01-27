@@ -25,6 +25,11 @@ type StreamPipeHandler interface {
 	HandleStreamPipe(*Resource) error
 }
 
+type ProgressUpdater interface {
+	Commander
+	UpdateProgress(*Resource) chan interface{}
+}
+
 // PipeHandler is an interface that commands implement if they can accept input
 // from STDIN.
 type PipeHandler interface {
@@ -107,7 +112,14 @@ func Handle(command Commander) {
 		errExit1(command, resource)
 	}
 
-	go handleExecute(command, resource)
+	handleExecute(command, resource)
+
+	if progressUpdater, ok := command.(ProgressUpdater); ok {
+		statusChannel := progressUpdater.UpdateProgress(resource)
+		for msg := range statusChannel {
+			fmt.Println(msg)
+		}
+	}
 
 	for resource := range ctx.Results {
 		processResult(command, resource)
@@ -178,6 +190,9 @@ func handleExecute(command Commander, resource *Resource) {
 				ctx.Results <- &resource
 				close(ctx.Results)
 			}(*resource)
+			//for msg := range ctx.DebugChannel {
+			//	fmt.Println(msg)
+			//}
 		}
 		// the command is a single execution (as opposed to reading from a pipe)
 	} else {
@@ -186,6 +201,9 @@ func handleExecute(command Commander, resource *Resource) {
 			ctx.Results <- &resource
 			close(ctx.Results)
 		}(*resource)
+		//for msg := range ctx.DebugChannel {
+		//	ctx.logger.Println(msg)
+		//}
 	}
 }
 

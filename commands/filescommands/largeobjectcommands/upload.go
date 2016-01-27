@@ -8,12 +8,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rackspace/rack/internal/github.com/gosuri/uiprogress"
 	"github.com/rackspace/rack/commandoptions"
 	"github.com/rackspace/rack/commands/filescommands/objectcommands"
 	"github.com/rackspace/rack/handler"
 	"github.com/rackspace/rack/internal/github.com/codegangsta/cli"
 	"github.com/rackspace/rack/internal/github.com/dustin/go-humanize"
+	"github.com/rackspace/rack/internal/github.com/gosuri/uiprogress"
 	osObjects "github.com/rackspace/rack/internal/github.com/rackspace/gophercloud/openstack/objectstorage/v1/objects"
 	"github.com/rackspace/rack/util"
 )
@@ -81,11 +81,12 @@ func flagsUpload() []cli.Flag {
 var keysUpload = []string{}
 
 type paramsUpload struct {
-	container string
-	object    string
-	stream    io.Reader
-	opts      osObjects.CreateLargeOpts
-	quiet     bool
+	container     string
+	object        string
+	stream        io.Reader
+	opts          osObjects.CreateLargeOpts
+	quiet         bool
+	statusChannel chan interface{}
 }
 
 type commandUpload handler.Command
@@ -144,10 +145,11 @@ func (command *commandUpload) HandleFlags(resource *handler.Resource) error {
 	*/
 
 	resource.Params = &paramsUpload{
-		container: containerName,
-		object:    c.String("name"),
-		opts:      opts,
-		quiet:     c.Bool("quiet"),
+		container:     containerName,
+		object:        c.String("name"),
+		opts:          opts,
+		quiet:         c.Bool("quiet"),
+		statusChannel: make(chan interface{}),
 	}
 
 	return nil
@@ -200,9 +202,10 @@ func (command *commandUpload) Execute(resource *handler.Resource) {
 	objectName := params.object
 	stream := params.stream
 	opts := params.opts
+	statusChannel := params.statusChannel
 
-	statusChannel := make(chan *osObjects.TransferStatus)
-	opts.StatusChannel = statusChannel
+	gophercloudChannel := make(chan *osObjects.TransferStatus)
+	opts.StatusChannel = gophercloudChannel
 
 	start := time.Now()
 
@@ -216,13 +219,13 @@ func (command *commandUpload) Execute(resource *handler.Resource) {
 	fileNamesByBar := map[*uiprogress.Bar]string{}
 
 	progress := uiprogress.New()
-	progress.RefreshInterval = time.Second * 2
+	progress.RefreshInterval = time.Second * 1
 
 	if !params.quiet {
 		progress.Start()
 	}
 
-	for status := range statusChannel {
+	for status := range gophercloudChannel {
 		switch status.MsgType {
 		case osObjects.StatusStarted:
 			statusBar := progress.AddBar(status.TotalSize).AppendCompleted().PrependElapsed().PrependFunc(func(b *uiprogress.Bar) string {
@@ -241,7 +244,7 @@ func (command *commandUpload) Execute(resource *handler.Resource) {
 				statusBarInfo.bar.Set(status.TotalSize)
 			}
 		case osObjects.StatusError:
-			command.Ctx.DebugChannel <- status.Err
+			statusChannel <- status.Err
 			if statusBarInfo := statusBarsByName[status.Name]; statusBarInfo != nil {
 				replacementBar := uiprogress.NewBar(statusBarInfo.bar.Total).AppendCompleted().PrependElapsed().PrependFunc(func(b *uiprogress.Bar) string {
 					return fmt.Sprintf("ERROR %s", fileNamesByBar[b])
@@ -250,11 +253,11 @@ func (command *commandUpload) Execute(resource *handler.Resource) {
 				progress.Bars[statusBarInfo.index] = replacementBar
 			}
 		default:
-			command.Ctx.DebugChannel <- status.Err
+			statusChannel <- status.Err
 		}
 	}
 
-	close(command.Ctx.DebugChannel)
+	close(statusChannel)
 
 	resource.Result = fmt.Sprintf("Finished! Uploaded object [%s] to container [%s] in %s", objectName, containerName, humanize.RelTime(start, time.Now(), "", ""))
 }
@@ -280,4 +283,8 @@ func (command *commandUpload) HandleStreamPipe(resource *handler.Resource) error
 type ProgressBarInfo struct {
 	index int
 	bar   *uiprogress.Bar
+}
+
+func (command *commandUpload) UpdateProgress(resource *handler.Resource) chan interface{} {
+	return resource.Params.(*paramsUpload).statusChannel
 }

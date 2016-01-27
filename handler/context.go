@@ -40,6 +40,8 @@ type Context struct {
 		useServiceNet bool
 	}
 
+	//DebugChannel chan interface{}
+
 	// logger is used to log information acquired while processing the command.
 	logger *logrus.Logger
 }
