@@ -116,8 +116,13 @@ func Handle(command Commander) {
 
 	if statusUpdater, ok := command.(StatusUpdater); ok {
 		statusChannel := statusUpdater.StatusChannel(resource)
+		f, err := os.Create("log.txt")
+		if err != nil {
+			panic(err)
+		}
 		for msg := range statusChannel {
-			fmt.Println(msg)
+			//fmt.Println(msg)
+			f.WriteString(fmt.Sprintf("%+v\n", msg))
 		}
 	}
 

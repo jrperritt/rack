@@ -741,7 +741,7 @@ func CreateLarge(c *gophercloud.ServiceClient, containerName, objectName string,
 							if len(uploadJobs) != 0 {
 								continue
 							}
-							time.Sleep(time.Second * 1)
+							time.Sleep(time.Second * 3)
 							break
 						}
 						transferStatus.MsgType = StatusError

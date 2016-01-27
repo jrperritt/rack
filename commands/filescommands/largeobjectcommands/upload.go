@@ -215,11 +215,11 @@ func (command *commandUpload) Execute(resource *handler.Resource) {
 
 	go osObjects.CreateLarge(command.Ctx.ServiceClient, containerName, objectName, stream, opts)
 
-	statusBarsByName := map[string]*uiprogress.Bar{}
+	statusBarsByName := map[string]*ProgressBarInfo{}
 	fileNamesByBar := map[*uiprogress.Bar]string{}
 
 	progress := uiprogress.New()
-	progress.RefreshInterval = time.Second * 1
+	progress.RefreshInterval = time.Second * 3
 
 	if !params.quiet {
 		progress.Start()
@@ -235,24 +235,31 @@ func (command *commandUpload) Execute(resource *handler.Resource) {
 				}).AppendFunc(func(b *uiprogress.Bar) string {
 					return fmt.Sprintf("%s/%s", humanize.Bytes(uint64(b.Current())), humanize.Bytes(uint64(b.Total)))
 				})
-				statusBarsByName[status.Name] = statusBar
+				index := len(progress.Bars) - 1
+				statusBarsByName[status.Name] = &ProgressBarInfo{index, statusBar}
 				fileNamesByBar[statusBar] = status.Name
 			} else {
 				//fileNamesByBar[statusBarInfo.bar] = status.Name
 			}
 
 		case osObjects.StatusUpdate:
-			if statusBar := statusBarsByName[status.Name]; statusBar != nil {
-				statusBar.Incr()
-				statusBar.Set(statusBar.Current() - 1 + status.IncrementUploaded)
+			if statusBarInfo := statusBarsByName[status.Name]; statusBarInfo != nil {
+				statusBarInfo.bar.Incr()
+				statusBarInfo.bar.Set(statusBarInfo.bar.Current() - 1 + status.IncrementUploaded)
 			}
 		case osObjects.StatusSuccess:
-			if statusBar := statusBarsByName[status.Name]; statusBar != nil {
-				statusBar.Set(status.TotalSize)
+			if statusBarInfo := statusBarsByName[status.Name]; statusBarInfo != nil {
+				statusBarInfo.bar.Set(status.TotalSize)
+				delete(fileNamesByBar, statusBarInfo.bar)
+				delete(statusBarsByName, status.Name)
+				progress.Bars = append(progress.Bars[:statusBarInfo.index], progress.Bars[statusBarInfo.index+1:]...)
+				for i, progressBar := range progress.Bars {
+					statusBarsByName[fileNamesByBar[progressBar]].index = i
+				}
 			}
 		case osObjects.StatusError:
-			if statusBar := statusBarsByName[status.Name]; statusBar != nil {
-				fileNamesByBar[statusBar] = fmt.Sprintf("[ERROR: %s, WILL RETRY] %s", status.Err, status.Name)
+			if statusBarInfo := statusBarsByName[status.Name]; statusBarInfo != nil {
+				fileNamesByBar[statusBarInfo.bar] = fmt.Sprintf("[ERROR: %s, WILL RETRY] %s", status.Err, status.Name)
 			}
 		default:
 			statusChannel <- status.Err
@@ -280,6 +287,11 @@ func (command *commandUpload) HandleStreamPipe(resource *handler.Resource) error
 	resource.Params.(*paramsUpload).object = command.Ctx.CLIContext.String("name")
 	resource.Params.(*paramsUpload).stream = os.Stdin
 	return nil
+}
+
+type ProgressBarInfo struct {
+	index int
+	bar   *uiprogress.Bar
 }
 
 func (command *commandUpload) StatusChannel(resource *handler.Resource) chan interface{} {
