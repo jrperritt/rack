@@ -621,7 +621,6 @@ func (cwtp contentWrapperTransferProgress) Read(p []byte) (int, error) {
 		IncrementUploaded: n,
 		MsgType:           StatusUpdate,
 		StartTime:         cwtp.startTime,
-		Err:               fmt.Errorf("cwtp: %+v", cwtp),
 	}
 	return n, err
 }
@@ -633,13 +632,6 @@ func CreateLarge(c *gophercloud.ServiceClient, containerName, objectName string,
 
 	// Get the size of the pieces
 	sizePieces, err := opts.SizeOfPieces()
-	if err != nil {
-		res.Err = err
-		return res
-	}
-
-	// Get the request headers and query string
-	headers, query, err := opts.ToObjectCreateLargeParams()
 	if err != nil {
 		res.Err = err
 		return res
@@ -660,6 +652,13 @@ func CreateLarge(c *gophercloud.ServiceClient, containerName, objectName string,
 	}
 
 	statusChannel, err := opts.ChannelOfStatuses()
+	if err != nil {
+		res.Err = err
+		return res
+	}
+
+	// Get the request headers and query string
+	headers, query, err := opts.ToObjectCreateLargeParams()
 	if err != nil {
 		res.Err = err
 		return res
@@ -705,6 +704,7 @@ func CreateLarge(c *gophercloud.ServiceClient, containerName, objectName string,
 						cwtp.totalSize = int(contentLength % sizePieces)
 					}
 
+					headers["Content-Length"] = string(cwtp.totalSize)
 					ropts := gophercloud.RequestOpts{
 						RawBody:     cwtp,
 						MoreHeaders: headers,
