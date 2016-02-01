@@ -116,13 +116,11 @@ func Handle(command Commander) {
 
 	if statusUpdater, ok := command.(StatusUpdater); ok {
 		statusChannel := statusUpdater.StatusChannel(resource)
-		f, err := os.Create("log.txt")
 		if err != nil {
 			panic(err)
 		}
 		for msg := range statusChannel {
-			//fmt.Println(msg)
-			f.WriteString(fmt.Sprintf("%+v\n", msg))
+			fmt.Println(msg)
 		}
 	}
 
@@ -195,9 +193,6 @@ func handleExecute(command Commander, resource *Resource) {
 				ctx.Results <- &resource
 				close(ctx.Results)
 			}(*resource)
-			//for msg := range ctx.DebugChannel {
-			//	fmt.Println(msg)
-			//}
 		}
 		// the command is a single execution (as opposed to reading from a pipe)
 	} else {
@@ -206,9 +201,6 @@ func handleExecute(command Commander, resource *Resource) {
 			ctx.Results <- &resource
 			close(ctx.Results)
 		}(*resource)
-		//for msg := range ctx.DebugChannel {
-		//	ctx.logger.Println(msg)
-		//}
 	}
 }
 

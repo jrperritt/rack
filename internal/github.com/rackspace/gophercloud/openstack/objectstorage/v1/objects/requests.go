@@ -568,9 +568,9 @@ func (opts CreateLargeOpts) NumConcurrent() (int, error) {
 // ChannelOfStatuses returns the channel on which to send status updates on the
 // progress of the upload.
 func (opts CreateLargeOpts) ChannelOfStatuses() (chan *TransferStatus, error) {
-	if opts.StatusChannel == nil {
-		return nil, errors.New("StatusChannel must be provided.")
-	}
+	//if opts.StatusChannel == nil {
+	//	return nil, errors.New("StatusChannel must be provided.")
+	//}
 	return opts.StatusChannel, nil
 }
 
@@ -594,33 +594,33 @@ type uploadJob struct {
 
 // TransferStatus is the status of an HTTP transfer.
 type TransferStatus struct {
-	Name              string
-	TotalSize         int
-	IncrementUploaded int
-	StartTime         time.Time
-	MsgType           StatusMsg
-	Err               error
+	Name      string
+	TotalSize int
+	Increment int
+	StartTime time.Time
+	MsgType   StatusMsg
+	Err       error
 }
 
 // contentWrapperTransferProgress is a wrapper to track the progress of an
 // HTTP transfer such as a file upload or download.
 type contentWrapperTransferProgress struct {
-	userContent       io.Reader
-	name              string
-	totalSize         int
-	incrementUploaded int
-	startTime         time.Time
-	responseChannel   chan *TransferStatus
+	userContent     io.Reader
+	name            string
+	totalSize       int
+	increment       int
+	startTime       time.Time
+	responseChannel chan *TransferStatus
 }
 
 func (cwtp contentWrapperTransferProgress) Read(p []byte) (int, error) {
 	n, err := cwtp.userContent.Read(p)
 	cwtp.responseChannel <- &TransferStatus{
-		Name:              cwtp.name,
-		TotalSize:         cwtp.totalSize,
-		IncrementUploaded: n,
-		MsgType:           StatusUpdate,
-		StartTime:         cwtp.startTime,
+		Name:      cwtp.name,
+		TotalSize: cwtp.totalSize,
+		Increment: n,
+		MsgType:   StatusUpdate,
+		StartTime: cwtp.startTime,
 	}
 	return n, err
 }
@@ -692,33 +692,33 @@ func CreateLarge(c *gophercloud.ServiceClient, containerName, objectName string,
 
 					hash := md5.New()
 
+					totalSize := int(sizePieces)
+					if job.id == numPieces-1 {
+						totalSize = int(contentLength % sizePieces)
+					}
+
 					cwtp := contentWrapperTransferProgress{
+						userContent:     io.TeeReader(sectionReader, hash),
 						name:            thisObject,
-						totalSize:       int(sizePieces),
+						totalSize:       totalSize,
 						startTime:       time.Now(),
 						responseChannel: statusChannel,
 					}
-					cwtp.userContent = io.TeeReader(sectionReader, hash)
-
-					if job.id == numPieces-1 {
-						cwtp.totalSize = int(contentLength % sizePieces)
-					}
-
-					headers["Content-Length"] = string(cwtp.totalSize)
-					ropts := gophercloud.RequestOpts{
-						RawBody:     cwtp,
-						MoreHeaders: headers,
-					}
 
 					transferStatus := &TransferStatus{
-						Name:              thisObject,
-						TotalSize:         cwtp.totalSize,
-						IncrementUploaded: cwtp.incrementUploaded,
-						StartTime:         time.Now(),
+						Name:      thisObject,
+						TotalSize: totalSize,
+						StartTime: time.Now(),
 					}
 
 					transferStatus.MsgType = StatusStarted
 					statusChannel <- transferStatus
+
+					headers["Content-Length"] = string(totalSize)
+					ropts := gophercloud.RequestOpts{
+						RawBody:     cwtp,
+						MoreHeaders: headers,
+					}
 
 					resp, err := c.Request("PUT", url, ropts)
 
@@ -777,9 +777,9 @@ func CreateLarge(c *gophercloud.ServiceClient, containerName, objectName string,
 			}
 
 			transferStatus := &TransferStatus{
-				Name:              thisObject,
-				IncrementUploaded: cwtp.incrementUploaded,
-				StartTime:         time.Now(),
+				Name:      thisObject,
+				Increment: cwtp.increment,
+				StartTime: time.Now(),
 			}
 
 			buf := bytes.NewBuffer([]byte{})

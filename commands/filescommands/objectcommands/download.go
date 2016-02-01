@@ -3,10 +3,12 @@ package objectcommands
 import (
 	"io"
 	"io/ioutil"
+	"time"
 
 	"github.com/rackspace/rack/commandoptions"
 	"github.com/rackspace/rack/handler"
 	"github.com/rackspace/rack/internal/github.com/codegangsta/cli"
+	osObjects "github.com/rackspace/rack/internal/github.com/rackspace/gophercloud/openstack/objectstorage/v1/objects"
 	"github.com/rackspace/rack/internal/github.com/rackspace/gophercloud/rackspace/objectstorage/v1/objects"
 	"github.com/rackspace/rack/util"
 )
@@ -93,7 +95,10 @@ func (command *commandDownload) Execute(resource *handler.Resource) {
 		resource.Err = rawResponse.Err
 		return
 	}
-	resource.Result = rawResponse.Body
+
+	resource.Result = contentWrapperTransferProgress{
+		userContent: rawResponse.Body,
+	}
 }
 
 func (command *commandDownload) JSON(resource *handler.Resource) {
@@ -103,4 +108,27 @@ func (command *commandDownload) JSON(resource *handler.Resource) {
 		return
 	}
 	resource.Result = string(bytes)
+}
+
+// contentWrapperTransferProgress is a wrapper to track the progress of an
+// HTTP transfer such as a file upload or download.
+type contentWrapperTransferProgress struct {
+	userContent     io.ReadCloser
+	name            string
+	totalSize       int
+	increment       int
+	startTime       time.Time
+	responseChannel chan *osObjects.TransferStatus
+}
+
+func (cwtp contentWrapperTransferProgress) Read(p []byte) (int, error) {
+	n, err := cwtp.userContent.Read(p)
+	cwtp.responseChannel <- &osObjects.TransferStatus{
+		Name:      cwtp.name,
+		TotalSize: cwtp.totalSize,
+		Increment: n,
+		MsgType:   osObjects.StatusUpdate,
+		StartTime: cwtp.startTime,
+	}
+	return n, err
 }

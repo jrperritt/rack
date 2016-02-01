@@ -250,14 +250,16 @@ func (command *commandUpload) Execute(resource *handler.Resource) {
 				fileNamesByBar[statusBar] = status.Name
 				totalActive++
 				updateSummary(progress)
-			} //else {
-			//fileNamesByBar[statusBarInfo.bar] = status.Name
-			//}
+			} else {
+				totalActive++
+				totalErrored--
+				updateSummary(progress)
+			}
 
 		case osObjects.StatusUpdate:
 			if statusBarInfo := statusBarsByName[status.Name]; statusBarInfo != nil {
 				statusBarInfo.bar.Incr()
-				statusBarInfo.bar.Set(statusBarInfo.bar.Current() - 1 + status.IncrementUploaded)
+				statusBarInfo.bar.Set(statusBarInfo.bar.Current() - 1 + status.Increment)
 				updateSummary(progress)
 			}
 		case osObjects.StatusSuccess:

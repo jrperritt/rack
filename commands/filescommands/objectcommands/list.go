@@ -52,6 +52,10 @@ func flagsList() []cli.Flag {
 			Name:  "limit",
 			Usage: "[optional] Only return this many objects at most.",
 		},
+		cli.StringFlag{
+			Name:  "delimiter",
+			Usage: "[optional] Return objects names that are nested in the container.",
+		},
 	}
 }
 
@@ -93,12 +97,19 @@ func (command *commandList) HandleFlags(resource *handler.Resource) error {
 	}
 
 	c := command.Ctx.CLIContext
+
+	delimiter := ""
+	if d := c.String("delimiter"); d != "" {
+		delimiter = d
+	}
+
 	opts := &osObjects.ListOpts{
 		Full:      c.Bool("full"),
 		Prefix:    c.String("prefix"),
 		EndMarker: c.String("end-marker"),
 		Marker:    c.String("marker"),
 		Limit:     c.Int("limit"),
+		Delimiter: delimiter,
 	}
 
 	resource.Params = &paramsList{

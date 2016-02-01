@@ -2,7 +2,6 @@ package objectcommands
 
 import (
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -68,7 +67,6 @@ var keysUploadDir = []string{}
 type paramsUploadDir struct {
 	container   string
 	dir         string
-	stream      io.ReadSeeker
 	opts        objects.CreateOpts
 	concurrency int
 	quiet       bool
@@ -168,13 +166,14 @@ func (command *commandUploadDir) Execute(resource *handler.Resource) {
 	results := make(chan *handler.Resource)
 
 	var wg sync.WaitGroup
-	var totalSize uint64
-	var totalFiles int64
+
+	totals := uploadDirSummary{RWMutex: new(sync.RWMutex)}
+
 	start := time.Now()
 
 	for i := 0; i < params.concurrency; i++ {
 		wg.Add(1)
-		go func(totalSize *uint64, totalFiles *int64) {
+		go func() {
 			for p := range jobs {
 				var re *handler.Resource
 
@@ -191,8 +190,10 @@ func (command *commandUploadDir) Execute(resource *handler.Resource) {
 
 				fi, err := os.Stat(p)
 				if err == nil {
-					*totalSize += uint64(fi.Size())
-					*totalFiles++
+					totals.Lock()
+					totals.totalSize += uint64(fi.Size())
+					totals.totalFiles++
+					totals.Unlock()
 				}
 
 				if !params.quiet {
@@ -200,7 +201,7 @@ func (command *commandUploadDir) Execute(resource *handler.Resource) {
 				}
 			}
 			wg.Done()
-		}(&totalSize, &totalFiles)
+		}()
 	}
 
 	filepath.Walk(params.dir, func(path string, info os.FileInfo, err error) error {
@@ -219,7 +220,7 @@ func (command *commandUploadDir) Execute(resource *handler.Resource) {
 	wg.Wait()
 	close(results)
 
-	resource.Result = fmt.Sprintf("Finished! Uploaded %s %s totaling %s in %s", humanize.Comma(totalFiles), util.Pluralize("object", totalFiles), humanize.Bytes(totalSize), humanize.RelTime(start, time.Now(), "", ""))
+	resource.Result = fmt.Sprintf("Finished! Uploaded %s %s totaling %s in %s", humanize.Comma(totals.totalFiles), util.Pluralize("object", totals.totalFiles), humanize.Bytes(totals.totalSize), humanize.RelTime(start, time.Now(), "", ""))
 }
 
 func (command *commandUploadDir) handle(p string, params *paramsUploadDir) *handler.Resource {
@@ -246,4 +247,10 @@ func (command *commandUploadDir) handle(p string, params *paramsUploadDir) *hand
 	}
 
 	return re
+}
+
+type uploadDirSummary struct {
+	*sync.RWMutex
+	totalSize  uint64
+	totalFiles int64
 }
