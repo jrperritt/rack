@@ -16,8 +16,15 @@ Binary Downloads:
 * `Linux (64 bit)`_
 * `Windows (64 bit)`_
 
-OSX and Linux
-^^^^^^^^^^^^^
+OSX and Linux with Homebrew
+^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+If you are using `Homebrew`_, run the following command::
+
+    brew install rack
+
+OSX and Linux (without Homebrew)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 After downloading the binary on OSX and Linux you will need to make the binary
 executable by typing::
@@ -33,8 +40,16 @@ You can now add it to your path with::
 
     export PATH=$PATH:/usr/local/bin
 
-Windows
-^^^^^^^
+Windows with Chocolatey
+^^^^^^^^^^^^^^^^^^^^^^^
+
+If you are using `Chocolatey`_, run the following command::
+
+    choco install rack
+
+Windows (without Chocolatey)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
 Option 1 : Manual
 ~~~~~~~~~~~~~~~~~
 
@@ -231,4 +246,6 @@ config file profile. In either case, the parameter name will be ``auth-url``.
 .. _Mac OSX (64 bit): https://ec4a542dbf90c03b9f75-b342aba65414ad802720b41e8159cf45.ssl.cf5.rackcdn.com/1.1.0-beta1/Darwin/amd64/rack
 .. _Linux (64 bit): https://ec4a542dbf90c03b9f75-b342aba65414ad802720b41e8159cf45.ssl.cf5.rackcdn.com/1.1.0-beta1/Linux/amd64/rack
 .. _Windows (64 bit): https://ec4a542dbf90c03b9f75-b342aba65414ad802720b41e8159cf45.ssl.cf5.rackcdn.com/1.1.0-beta1/Windows/amd64/rack.exe
+.. _Homebrew: http://brew.sh
+.. _Chocolatey: http://chocolatey.org
 .. _Cloud Control panel: https://mycloud.rackspace.com/

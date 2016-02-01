@@ -14,7 +14,7 @@ point of entry for all Rackspace Cloud services.
 Quickstart
 ----------
 
-For full instuctions on how to get started you should read :ref:`installation_and_configuration`.
+For full instructions on how to get started you should read :ref:`installation_and_configuration`.
 
 The tl;dr version is to grab the binary for your platform:
 
