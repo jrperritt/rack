@@ -22,7 +22,7 @@ build() {
 
     LDFLAGS="-X github.com/rackspace/rack/util.Commit${EQ}${COMMIT} \
              -X github.com/rackspace/rack/util.Version${EQ}${VERSION}"
-    go build  -ldflags "${LDFLAGS}" -o "${RACKBUILD}"
+    CGO_ENABLED=0 go build -a -installsuffix cgo -ldflags "${LDFLAGS}" -o "${RACKBUILD}"
     return $?
   else
     echo "\$GOPATH must be defined. Do you have go setup?"
