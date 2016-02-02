@@ -18,11 +18,12 @@ import (
 )
 
 var syncFromDir = cli.Command{
-	Name:        "sync-from-dir",
-	Usage:       util.Usage(commandPrefix, "sync-dir", "--container <containerName>"),
-	Description: "Alters the contents of a container to match a local directory, leaving the local directory unchanged.",
-	Action:      actionSyncFromDir,
-	Flags:       commandoptions.CommandFlags(flagsSyncFromDir, keysSyncFromDir),
+	Name:  "sync-from-dir",
+	Usage: util.Usage(commandPrefix, "sync-dir", "--container <containerName>"),
+	Description: "Alters the contents of a container to match a local directory, " +
+		"leaving the local directory unchanged.",
+	Action: actionSyncFromDir,
+	Flags:  commandoptions.CommandFlags(flagsSyncFromDir, keysSyncFromDir),
 	BashComplete: func(c *cli.Context) {
 		commandoptions.CompleteFlags(commandoptions.CommandFlags(flagsSyncFromDir, keysSyncFromDir))
 	},
@@ -47,24 +48,30 @@ func flagsSyncFromDir() []cli.Flag {
 			Usage: "[optional] The amount of concurrent workers that will sync the directory.",
 		},
 		cli.BoolFlag{
-			Name:  "quiet",
-			Usage: "[optional] By default, every file sync will be outputted. If --quiet is provided, only a final summary will be outputted.",
+			Name: "quiet",
+			Usage: "[optional] By default, every file sync will be outputted. If " +
+				"--quiet is provided, only a final summary will be outputted.",
 		},
 		cli.BoolFlag{
-			Name:  "recurse",
-			Usage: "[optional] By default, only files at the root level of the specified directory are synced. If --recurse is provided, the sync will be fully recursive and the entire subtree synced.",
+			Name: "recurse",
+			Usage: "[optional] By default, only files at the root level of the " +
+				"specified directory are synced. If --recurse is provided, the sync " +
+				"will be fully recursive and the entire subtree synced.",
 		},
 		cli.BoolFlag{
-			Name:  "prune",
-			Usage: "[optional] If provided, objects already in the container that are not in `dir` will be deleted.",
+			Name: "prune",
+			Usage: "[optional] If provided, objects already in the container that " +
+				"are not in `dir` will be deleted.",
 		},
 		cli.StringFlag{
-			Name:  "comparison-method",
-			Usage: "[optional] The method to use for comparing whether 2 files are the same. Options: md5, size-and-date. Default is size-and-date.",
+			Name: "comparison-method",
+			Usage: "[optional] The method to use for comparing whether 2 files are " +
+				"the same. Options: md5, size-and-date. Default is size-and-date.",
 		},
 		cli.StringFlag{
-			Name:  "path-separator",
-			Usage: "[optional] The character used to separate paths. Default is your operating system's default ('/' for Unix, '\\' for Windows).",
+			Name: "path-separator",
+			Usage: "[optional] The character used to separate paths. Default is" +
+				"your operating system's default ('/' for Unix, '\\' for Windows).",
 		},
 	}
 }
@@ -156,13 +163,9 @@ func (command *commandSyncFromDir) HandleFlags(resource *handler.Resource) error
 func (command *commandSyncFromDir) Execute(resource *handler.Resource) {
 	params := resource.Params.(*paramsSyncFromDir)
 
-	//if params.prune {
-	//	command.deleteFromContainer(params)
-	//}
+	//command.dirMinusContainer(params.dir, params.container)
 
-	command.dirMinusContainer(params.dir, params.container)
-
-	command.uploadFiles()
+	//command.uploadFiles()
 
 	stat, err := os.Stat(params.dir)
 	if err != nil {
@@ -179,8 +182,10 @@ func (command *commandSyncFromDir) Execute(resource *handler.Resource) {
 		runtime.GOMAXPROCS(runtime.NumCPU())
 	}
 
-	dirsToCheckChannel := make(chan os.FileInfo)
-	//filesToCheckChannel := make(chan string)
+	//filesToPruneChannel := make(chan os.FileInfo)
+	//filesToUploadChannel := make(chan string)
+	filesToCheckChannel := make(chan os.FileInfo)
+	//doneChannel := make(chan bool)
 	results := make(chan *handler.Resource)
 
 	var wg sync.WaitGroup
@@ -192,24 +197,33 @@ func (command *commandSyncFromDir) Execute(resource *handler.Resource) {
 	for i := 0; i < params.concurrency; i++ {
 		wg.Add(1)
 		go func() {
-			for fi := range dirsToCheckChannel {
-				var re *handler.Resource
+			for fi := range filesToCheckChannel {
 
-				re = command.checkDir(fi, params)
-				if re.Err != nil {
-					continue
+				objectRaw := objects.Get(command.Ctx.ServiceClient, params.container, fi.Name(), nil)
+
+				objectHeaders, err := objectRaw.Extract()
+				if err != nil {
+
 				}
 
-				if err == nil {
-					totals.Lock()
-					totals.totalSize += uint64(fi.Size())
-					totals.totalFiles++
-					totals.Unlock()
+				modifiedDate := objectRaw.Header["X-Object-Meta-Mtime"]
+
+				if params.prune {
+					//pruneContainer()
 				}
 
-				if !params.quiet {
-					command.Ctx.Results <- re
-				}
+				/*
+					var re *handler.Resource
+
+					re = command.checkDir(fi, params)
+					if re.Err != nil {
+						continue
+					}
+
+					if !params.quiet {
+						command.Ctx.Results <- re
+					}
+				*/
 			}
 			wg.Done()
 		}()
@@ -221,19 +235,24 @@ func (command *commandSyncFromDir) Execute(resource *handler.Resource) {
 		if !params.recurse && strings.Contains(strings.TrimPrefix(path, parent+pathSep), pathSep) {
 			return nil
 		}
-		if info.IsDir() {
-			dirsToCheckChannel <- info
+		if !info.IsDir() {
+			filesToCheckChannel <- info
 		}
 		return nil
 	})
 
-	close(dirsToCheckChannel)
-
+	//close(filesToPruneChannel)
+	//close(filesToUploadChannel)
+	close(filesToCheckChannel)
 	wg.Wait()
 
 	close(results)
 
-	resource.Result = fmt.Sprintf("Finished! Synced %s %s totaling %s in %s", humanize.Comma(totals.totalFiles), util.Pluralize("object", totals.totalFiles), humanize.Bytes(totals.totalSize), humanize.RelTime(start, time.Now(), "", ""))
+	resource.Result = fmt.Sprintf("Finished! Synced %s %s totaling %s in %s",
+		humanize.Comma(totals.totalFiles),
+		util.Pluralize("object", totals.totalFiles),
+		humanize.Bytes(totals.totalSize),
+		humanize.RelTime(start, time.Now(), "", ""))
 }
 
 func (command *commandSyncFromDir) prune(params *paramsSyncFromDir) {
