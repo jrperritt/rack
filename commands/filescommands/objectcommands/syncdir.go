@@ -2,6 +2,7 @@ package objectcommands
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -13,6 +14,7 @@ import (
 	"github.com/rackspace/rack/handler"
 	"github.com/rackspace/rack/internal/github.com/codegangsta/cli"
 	"github.com/rackspace/rack/internal/github.com/dustin/go-humanize"
+	"github.com/rackspace/rack/internal/github.com/rackspace/gophercloud/openstack/objectstorage/v1/containers"
 	"github.com/rackspace/rack/internal/github.com/rackspace/gophercloud/openstack/objectstorage/v1/objects"
 	"github.com/rackspace/rack/util"
 )
@@ -182,10 +184,7 @@ func (command *commandSyncFromDir) Execute(resource *handler.Resource) {
 		runtime.GOMAXPROCS(runtime.NumCPU())
 	}
 
-	//filesToPruneChannel := make(chan os.FileInfo)
-	//filesToUploadChannel := make(chan string)
 	filesToCheckChannel := make(chan os.FileInfo)
-	//doneChannel := make(chan bool)
 	results := make(chan *handler.Resource)
 
 	var wg sync.WaitGroup
@@ -193,6 +192,62 @@ func (command *commandSyncFromDir) Execute(resource *handler.Resource) {
 	totals := syncFromDirSummary{RWMutex: new(sync.RWMutex)}
 
 	start := time.Now()
+
+	if params.prune {
+		objectsToCheckChannel := make(chan string)
+
+		container, err := containers.Get(command.Ctx.ServiceClient, params.container).Extract()
+		if err != nil {
+			// container doesn't exist; exit
+		}
+
+		numObjectsPerGoroutine := int(math.Ceil(float64(container.ObjectCount) / float64(params.concurrency)))
+
+		for i := 1; i <= params.concurrency; i++ {
+			wg.Add(1)
+			go func(i int) {
+
+				allPages, err := objects.List(command.Ctx.ServiceClient, params.container, objects.ListOpts{
+					Limit: i * numObjectsPerGoroutine,
+				}).AllPages()
+				if err != nil {
+					// error listing this page of objects
+				}
+
+				objectNames, err := objects.ExtractNames(allPages)
+				if err != nil {
+					// error extracting names
+				}
+
+				parent := filepath.Clean(params.dir)
+				for _, objectName := range objectNames {
+					path := filepath.Join(parent, objectName)
+					if _, err := os.Stat(path); err != nil {
+						if os.IsNotExist(err) {
+							res := objects.Delete(command.Ctx.ServiceClient, params.container, objectName, nil)
+							if res.Err != nil {
+								// error deleting object from container
+							}
+						}
+						// error other than file not existing
+					}
+					// file exists; do nothing
+				}
+
+				/*
+					var re *handler.Resource
+
+					if !params.quiet {
+						command.Ctx.Results <- re
+					}
+				*/
+
+				wg.Done()
+			}(i)
+		}
+		close(objectsToCheckChannel)
+		wg.Wait()
+	}
 
 	for i := 0; i < params.concurrency; i++ {
 		wg.Add(1)
@@ -204,12 +259,6 @@ func (command *commandSyncFromDir) Execute(resource *handler.Resource) {
 				objectHeaders, err := objectRaw.Extract()
 				if err != nil {
 
-				}
-
-				modifiedDate := objectRaw.Header["X-Object-Meta-Mtime"]
-
-				if params.prune {
-					//pruneContainer()
 				}
 
 				/*
@@ -241,8 +290,6 @@ func (command *commandSyncFromDir) Execute(resource *handler.Resource) {
 		return nil
 	})
 
-	//close(filesToPruneChannel)
-	//close(filesToUploadChannel)
 	close(filesToCheckChannel)
 	wg.Wait()
 
