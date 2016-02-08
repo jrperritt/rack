@@ -184,7 +184,6 @@ func (command *commandSyncFromDir) Execute(resource *handler.Resource) {
 		runtime.GOMAXPROCS(runtime.NumCPU())
 	}
 
-	filesToCheckChannel := make(chan os.FileInfo)
 	results := make(chan *handler.Resource)
 
 	var wg sync.WaitGroup
@@ -193,20 +192,30 @@ func (command *commandSyncFromDir) Execute(resource *handler.Resource) {
 
 	start := time.Now()
 
+	// if we need to delete objects from the container that don't exist locally
 	if params.prune {
-		objectsToCheckChannel := make(chan string)
-
+		// get the container info
 		container, err := containers.Get(command.Ctx.ServiceClient, params.container).Extract()
+		// if there was a problem getting the container info
 		if err != nil {
 			// container doesn't exist; exit
 		}
 
+		// the number ob objects from the container each goroutine should check.
+		// we convert the number of objects and number of goroutines to floating
+		// point, divide them, and then round up to overestimate the number of
+		// objects in the container.
 		numObjectsPerGoroutine := int(math.Ceil(float64(container.ObjectCount) / float64(params.concurrency)))
 
+		// for each goroutine we spawn to prune objects from the container
 		for i := 1; i <= params.concurrency; i++ {
+			// set the variable that will be local to each goroutine
+			i := i
+			// add 1 to the waitgroup
 			wg.Add(1)
-			go func(i int) {
-
+			// spawn the goroutine
+			go func() {
+				//
 				allPages, err := objects.List(command.Ctx.ServiceClient, params.container, objects.ListOpts{
 					Limit: i * numObjectsPerGoroutine,
 				}).AllPages()
@@ -220,18 +229,24 @@ func (command *commandSyncFromDir) Execute(resource *handler.Resource) {
 				}
 
 				parent := filepath.Clean(params.dir)
+				// for each object name in the slice of object names
 				for _, objectName := range objectNames {
+					// join the parent path with the relative path from the container
 					path := filepath.Join(parent, objectName)
+					// if the there's an error stat-ing the file path
 					if _, err := os.Stat(path); err != nil {
+						// if the error is for the file not existing locally
 						if os.IsNotExist(err) {
+							// delete it from container.
 							res := objects.Delete(command.Ctx.ServiceClient, params.container, objectName, nil)
+							// if we encountered an error deleting the object from the container
 							if res.Err != nil {
-								// error deleting object from container
+								// send the error back to the user
 							}
 						}
-						// error other than file not existing
+						// else the error is for something other than the file not existing
 					}
-					// file exists; do nothing
+					// else file exists; do nothing
 				}
 
 				/*
@@ -242,13 +257,20 @@ func (command *commandSyncFromDir) Execute(resource *handler.Resource) {
 					}
 				*/
 
+				// this goroutine has finished, so subtract 1 from the waitgroup.
 				wg.Done()
-			}(i)
+			}()
 		}
-		close(objectsToCheckChannel)
+		// wait until all the goroutines have finished pruning objects from
+		// the container before continuing.
 		wg.Wait()
 	}
 
+	// create a channel into which we can put the local file [info] that we
+	// need to check in the container.
+	filesToCheckChannel := make(chan os.FileInfo)
+
+	//
 	for i := 0; i < params.concurrency; i++ {
 		wg.Add(1)
 		go func() {
